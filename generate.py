@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Tạo ảnh kindle.png (600x800, thang xám) gồm: lịch, giá vàng, giá xăng, tin tức."""
+import html
 import json
+import re
 import sys
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -68,7 +70,13 @@ def get_fuel():
         return None
 
 
-def get_news(n=6):
+def _clean(text):
+    text = re.sub(r"<[^>]+>", " ", text or "")
+    return re.sub(r"\s+", " ", html.unescape(text)).strip()
+
+
+def get_news(n=10):
+    """Trả về danh sách (tiêu đề, tóm tắt)."""
     feeds = [
         "https://vnexpress.net/rss/tin-moi-nhat.rss",
         "https://tuoitre.vn/rss/tin-moi-nhat.rss",
@@ -76,10 +84,14 @@ def get_news(n=6):
     for url in feeds:
         try:
             root = ET.fromstring(http_get(url))
-            titles = [i.findtext("title", "").strip() for i in root.iter("item")]
-            titles = [t for t in titles if t][:n]
-            if titles:
-                return titles
+            items = []
+            for i in root.iter("item"):
+                title = _clean(i.findtext("title", ""))
+                desc = _clean(i.findtext("description", ""))
+                if title:
+                    items.append((title, desc))
+            if items:
+                return items[:n]
         except Exception as e:
             print("tin tức lỗi:", url, e, file=sys.stderr)
     return None
@@ -119,44 +131,56 @@ def render(now, lunar, gold, fuel, news, out="kindle.png"):
         d.text((190, 116), lunar, font=font(22), fill=60)
     d.line((pad, 185, W - pad, 185), fill=0, width=3)
 
-    # --- Giá vàng + giá xăng ---
-    y = 198
-    d.text((pad, y), "VÀNG SJC (đ/lượng)", font=font(20, True), fill=0)
+    # --- Giá vàng (trái) + giá xăng (phải) trên cùng một hàng ---
+    y = 196
+    d.text((pad, y), "VÀNG SJC (đ/lượng)", font=font(18, True), fill=0)
     if gold:
-        d.text((pad, y + 28), f"Mua {fmt_money(gold['buy'])}", font=font(30, True), fill=0)
-        d.text((pad + 270, y + 28), f"Bán {fmt_money(gold['sell'])}", font=font(30, True), fill=0)
+        d.text((pad, y + 26), f"Mua {fmt_money(gold['buy'])}", font=font(24, True), fill=0)
+        d.text((pad, y + 58), f"Bán {fmt_money(gold['sell'])}", font=font(24, True), fill=0)
     else:
-        d.text((pad, y + 28), "— chưa lấy được —", font=font(24), fill=110)
+        d.text((pad, y + 28), "— chưa lấy được —", font=font(20), fill=110)
 
-    y = 290
-    d.text((pad, y), "XĂNG RON 95 (đ/lít)", font=font(20, True), fill=0)
+    x2 = 330
+    d.text((x2, y), "XĂNG RON 95 (đ/lít)", font=font(18, True), fill=0)
     if fuel and fuel.get("ron95"):
         try:
             p = f"{float(fuel['ron95']):,.0f}".replace(",", ".")
         except ValueError:
             p = str(fuel["ron95"])
-        d.text((pad, y + 28), p, font=font(30, True), fill=0)
+        d.text((x2, y + 26), p, font=font(30, True), fill=0)
     else:
-        d.text((pad, y + 28), "— chưa lấy được —", font=font(24), fill=110)
-    d.line((pad, 372, W - pad, 372), fill=0, width=3)
+        d.text((x2, y + 28), "— chưa lấy được —", font=font(20), fill=110)
+    d.line((pad, 292, W - pad, 292), fill=0, width=3)
 
-    # --- Tin tức ---
-    y = 386
-    d.text((pad, y), "TIN MỚI", font=font(20, True), fill=0)
-    y += 32
-    f_news = font(20)
+    # --- Tin tức: tiêu đề + tóm tắt, chữ nhỏ hơn để chứa nhiều hơn ---
+    y = 302
+    d.text((pad, y), "TIN MỚI", font=font(18, True), fill=0)
+    y += 28
+    f_title, f_desc = font(16, True), font(15)
+    lh_t, lh_d = 21, 20
+    text_w = W - 2 * pad - 16
+    bottom = H - 36
     if news:
-        for t in news:
-            lines = wrap(d, t, f_news, W - 2 * pad - 18)[:3]
-            if y + len(lines) * 26 > H - 40:
-                break
-            d.text((pad, y), "•", font=f_news, fill=0)
-            for ln in lines:
-                d.text((pad + 18, y), ln, font=f_news, fill=0)
-                y += 26
-            y += 10
+        for title, desc in news:
+            t_lines = wrap(d, title, f_title, text_w)[:2]
+            d_lines = wrap(d, desc, f_desc, text_w)[:3] if desc and desc != title else []
+            need = len(t_lines) * lh_t + len(d_lines) * lh_d + 8
+            if y + need > bottom:
+                # thử bỏ bớt phần tóm tắt cho vừa chỗ còn lại
+                d_lines = d_lines[:max(0, (bottom - y - len(t_lines) * lh_t - 8) // lh_d)]
+                need = len(t_lines) * lh_t + len(d_lines) * lh_d + 8
+                if y + need > bottom:
+                    break
+            d.text((pad, y), "•", font=f_title, fill=0)
+            for ln in t_lines:
+                d.text((pad + 16, y), ln, font=f_title, fill=0)
+                y += lh_t
+            for ln in d_lines:
+                d.text((pad + 16, y), ln, font=f_desc, fill=70)
+                y += lh_d
+            y += 8
     else:
-        d.text((pad, y), "— chưa lấy được tin —", font=font(22), fill=110)
+        d.text((pad, y), "— chưa lấy được tin —", font=font(20), fill=110)
 
     # --- Giờ cập nhật ---
     d.text((pad, H - 30), "Cập nhật " + now.strftime("%H:%M %d/%m"), font=font(16), fill=110)
